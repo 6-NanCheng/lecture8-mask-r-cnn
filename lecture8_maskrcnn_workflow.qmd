@@ -1,7 +1,8 @@
 ---
 title: "实例分割 Mask R-CNN 完整工作流程"
 subtitle: "从图像标注到模型训练与性能评估"
-author: "数据驱动的可重复性研究"
+author: "gaoch"
+date: today
 format:
   html:
     toc: true

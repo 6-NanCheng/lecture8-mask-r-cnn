@@ -37,3 +37,7 @@ data/test_images/
 # =========================================
 .DS_Store
 Thumbs.db
+
+*_files/
+*.html
+
