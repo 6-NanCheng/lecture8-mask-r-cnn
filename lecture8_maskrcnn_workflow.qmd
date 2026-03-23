@@ -13,6 +13,7 @@ format:
 execute:
   eval: true
   echo: true
+  error: true
 ---
 
 # 环境配置与理论基础
@@ -23,7 +24,7 @@ execute:
 
 首先创建虚拟环境并安装依赖：
 
-```{bash}
+```bash
 # 创建虚拟环境
 uv venv --python 3.10
 
@@ -73,10 +74,6 @@ print("Environment setup successful!")
 
 查看当前项目结构：
 
-```{bash}
-tree -L 2 -I '.venv|__pycache__|.git|outputs'
-```
-
 预期结构：
 
 ```
@@ -95,15 +92,27 @@ lecture8-maskrcnn/
 
 验证训练图像和测试图像是否就位：
 
-```{bash}
-echo "训练图像数量："
-ls data/images/ | wc -l
+```{python}
+import os
+from pathlib import Path
 
-echo -e "\n测试图像数量："
-ls data/test_images/ | wc -l
+train_dir = Path("data/images")
+test_dir = Path("data/test_images")
 
-echo -e "\n测试图像列表："
-ls data/test_images/
+if train_dir.exists():
+    train_images = [f for f in train_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
+    print(f"训练图像数量: {len(train_images)}")
+else:
+    print("训练图像目录不存在")
+
+if test_dir.exists():
+    test_images = [f for f in test_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
+    print(f"\n测试图像数量: {len(test_images)}")
+    print("\n测试图像列表:")
+    for img in sorted(test_images):
+        print(f"  - {img.name}")
+else:
+    print("\n测试图像目录不存在")
 ```
 
 ::: {.callout-note}
@@ -154,12 +163,23 @@ rm -rf cvat_export
 
 验证标注文件：
 
-```{bash}
-# 检查文件是否存在
-ls -lh data/annotations/merged_raw.json
+```{python}
+from pathlib import Path
 
-# 查看文件前几行
-head data/annotations/merged_raw.json
+ann_file = Path("data/annotations/merged_raw.json")
+if ann_file.exists():
+    file_size = ann_file.stat().st_size
+    print(f"文件: {ann_file}")
+    print(f"大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+    
+    print("\n文件前10行:")
+    with open(ann_file, 'r') as f:
+        for i, line in enumerate(f):
+            if i >= 10:
+                break
+            print(line.rstrip())
+else:
+    print(f"文件不存在: {ann_file}")
 ```
 
 ---
@@ -491,8 +511,18 @@ plt.show()
 
 ## 检查保存的模型权重
 
-```{bash}
-ls -lh outputs/checkpoints/
+```{python}
+from pathlib import Path
+
+checkpoint_dir = Path("outputs/checkpoints")
+if checkpoint_dir.exists():
+    checkpoints = sorted(checkpoint_dir.glob("*.pth"))
+    print(f"保存的模型权重 ({len(checkpoints)} 个):\n")
+    for ckpt in checkpoints:
+        size_mb = ckpt.stat().st_size / (1024 * 1024)
+        print(f"  {ckpt.name:30s}  {size_mb:8.2f} MB")
+else:
+    print("checkpoints 目录不存在")
 ```
 
 ---
@@ -533,15 +563,17 @@ model.to(device)
 model.eval()
 ```
 
-对测试集进行推理并可视化结果：
+对测试集进行推理并收集结果：
 
 ```{python}
-test_dir = "data/test_images"
-save_dir = "outputs/infer_results"
-os.makedirs(save_dir, exist_ok=True)
+import matplotlib.pyplot as plt
 
+test_dir = "data/test_images"
 exts = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
 img_files = [f for f in os.listdir(test_dir) if os.path.splitext(f)[1].lower() in exts]
+
+# 存储推理结果用于可视化
+inference_results = []
 
 for fname in tqdm(img_files, desc="Inferencing"):
     img_path = os.path.join(test_dir, fname)
@@ -551,6 +583,7 @@ for fname in tqdm(img_files, desc="Inferencing"):
     with torch.no_grad():
         outputs = model([img_tensor])[0]
     
+    # 可视化处理
     img = np.array(image)[:, :, ::-1].copy()
     boxes = outputs["boxes"].cpu().numpy()
     scores = outputs["scores"].cpu().numpy()
@@ -575,49 +608,36 @@ for fname in tqdm(img_files, desc="Inferencing"):
         cv2.putText(img, text, (box[0], max(0, box[1] - 5)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
     
-    save_path = os.path.join(save_dir, f"pred_{fname}")
-    cv2.imwrite(save_path, img)
+    # 转换回 RGB 用于显示
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    inference_results.append((fname, image, img_rgb))
 
-print(f"推理完成，结果已保存到：{save_dir}")
+print(f"推理完成，共处理 {len(inference_results)} 张图像")
 ```
 
-## 查看推理结果
+## 可视化推理结果
 
-列出生成的预测结果：
-
-```{bash}
-ls -lh outputs/infer_results/
-```
-
-## 可视化对比
-
-使用 Python 显示原图和预测结果的对比：
+显示前几张测试图像的原图和预测结果对比：
 
 ```{python}
-import matplotlib.pyplot as plt
-from PIL import Image
-import os
+# 显示前3张图像的对比结果
+num_display = min(3, len(inference_results))
 
-# 选择一张测试图像
-test_img_name = "IMG_20260130_180226.jpg"
-
-# 读取原图和预测结果
-original = Image.open(f'data/test_images/{test_img_name}')
-prediction = Image.open(f'outputs/infer_results/pred_{test_img_name}')
-
-# 并排显示
-fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-
-axes[0].imshow(original)
-axes[0].set_title('Original Image', fontsize=14)
-axes[0].axis('off')
-
-axes[1].imshow(prediction)
-axes[1].set_title('Prediction (Mask + BBox + Score)', fontsize=14)
-axes[1].axis('off')
-
-plt.tight_layout()
-plt.show()
+for idx in range(num_display):
+    fname, original, prediction = inference_results[idx]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    
+    axes[0].imshow(original)
+    axes[0].set_title(f'Original: {fname}', fontsize=14)
+    axes[0].axis('off')
+    
+    axes[1].imshow(prediction)
+    axes[1].set_title('Prediction (Mask + BBox + Score)', fontsize=14)
+    axes[1].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
 ```
 
 ::: {.callout-tip}
@@ -797,37 +817,9 @@ print(metrics_df.to_string(index=False))
 
 ## 对比不同 epoch 的模型
 
-评估不同训练阶段的模型性能：
-
-```{bash}
-# 评估 epoch 3 的模型
-python evaluate.py --weight outputs/checkpoints/model_epoch_3.pth --output outputs/eval_epoch3.json
-
-# 评估 epoch 5 的模型
-python evaluate.py --weight outputs/checkpoints/model_epoch_5.pth --output outputs/eval_epoch5.json
-```
-
-对比结果：
-
-```{python}
-import json
-import pandas as pd
-
-# 读取不同 epoch 的评估结果
-results_e3 = json.load(open('outputs/eval_epoch3.json', 'r'))
-results_e5 = json.load(open('outputs/eval_epoch5.json', 'r'))
-
-# 创建对比表格
-comparison = pd.DataFrame({
-    "Metric": list(results_e3.keys()),
-    "Epoch 3": list(results_e3.values()),
-    "Epoch 5": list(results_e5.values())
-})
-
-comparison["Improvement"] = comparison["Epoch 5"] - comparison["Epoch 3"]
-
-print(comparison.to_string(index=False))
-```
+::: {.callout-note}
+如需对比不同 epoch 的模型性能，可以修改上面评估代码块中的模型路径，分别运行评估并保存结果，然后使用下面的代码进行对比。
+:::
 
 ---
 
