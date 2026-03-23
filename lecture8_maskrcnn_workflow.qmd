@@ -1,0 +1,637 @@
+---
+title: "实例分割 Mask R-CNN 完整工作流程"
+subtitle: "从图像标注到模型训练与性能评估"
+author: "数据驱动的可重复性研究"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-tools: true
+    theme: cosmo
+    number-sections: true
+execute:
+  eval: true
+  echo: true
+---
+
+# 环境配置与理论基础
+
+## 环境配置
+
+本项目使用 **uv** 作为 Python 环境管理工具，推荐在 **Positron** IDE 中完成实验。
+
+首先创建虚拟环境并安装依赖：
+
+```{bash}
+# 创建虚拟环境
+uv venv --python 3.10
+
+# 激活环境（Mac/Linux）
+source .venv/bin/activate
+
+# 安装依赖
+uv pip install -r requirements.txt
+```
+
+::: {.callout-tip}
+## Positron 配置
+在 Positron 中按 `Cmd+Shift+P` (Mac) 或 `Ctrl+Shift+P` (Windows)，输入 "Python: Select Interpreter"，选择 `.venv/bin/python`。
+:::
+
+验证环境安装：
+
+```{python}
+import torch
+import torchvision
+from pycocotools import mask as mask_utils
+
+print(f"PyTorch version: {torch.__version__}")
+print(f"Torchvision version: {torchvision.__version__}")
+print(f"CUDA available: {torch.cuda.is_available()}")
+print("Environment setup successful!")
+```
+
+## 实例分割简介
+
+**语义分割 vs 实例分割**：
+
+- **语义分割**：像素级分类，所有番茄植株标为同一类
+- **实例分割**：像素级分类 + 实例区分，番茄 A、B、C 分别标注
+
+**Mask R-CNN** 是实例分割的经典模型，基于 Faster R-CNN 扩展，包含三个分支：
+
+1. **分类分支**：预测物体类别
+2. **边框分支**：回归 bbox
+3. **Mask 分支**：输出实例分割 mask
+
+---
+
+# 数据准备
+
+## 项目目录结构
+
+查看当前项目结构：
+
+```{bash}
+tree -L 2 -I '.venv|__pycache__|.git|outputs'
+```
+
+预期结构：
+
+```
+lecture8-maskrcnn/
+├── data/
+│   ├── images/              # 训练图像
+│   ├── annotations/         # 标注文件
+│   └── test_images/         # 测试图像
+├── train.py
+├── infer.py
+├── evaluate.py
+└── requirements.txt
+```
+
+## 检查数据文件
+
+验证训练图像和测试图像是否就位：
+
+```{bash}
+echo "训练图像数量："
+ls data/images/ | wc -l
+
+echo -e "\n测试图像数量："
+ls data/test_images/ | wc -l
+
+echo -e "\n测试图像列表："
+ls data/test_images/
+```
+
+::: {.callout-note}
+## 数据要求
+- 训练图像：10-30 张番茄植株图像（JPG/PNG 格式）
+- 测试图像：公共测试集，所有学生使用相同数据
+- 图像分辨率：建议 1000×1000 以上
+:::
+
+---
+
+# CVAT 图像标注
+
+## 标注流程概述
+
+使用在线版 CVAT ([https://app.cvat.ai](https://app.cvat.ai)) 进行标注：
+
+1. 注册并登录 CVAT
+2. 创建项目：`tomato_instance_segmentation`
+3. 创建任务：上传 `data/images/` 中的训练图像
+4. 添加标签：`plant`
+5. 使用 **Polygon 工具**（快捷键 `N`）逐个标注番茄植株实例
+6. 导出标注：选择 **Datumaro 1.0** 格式
+
+::: {.callout-important}
+## 标注要点
+- **每个植株单独标注**：不要将多个植株合并
+- **精确勾勒边缘**：贴合植株边缘，避免包含过多背景
+- **处理遮挡**：被遮挡部分也要标注可见区域
+- **检查遗漏**：完成后检查是否有漏标
+:::
+
+## 导出并放置标注文件
+
+从 CVAT 导出后，解压并放置标注文件：
+
+```bash
+# 假设下载的文件为 task_tomato-export.zip
+# 解压到临时目录
+unzip task_tomato-export.zip -d cvat_export
+
+# 复制标注文件到项目目录
+cp cvat_export/annotations/default.json data/annotations/merged_raw.json
+
+# 清理临时文件
+rm -rf cvat_export
+```
+
+验证标注文件：
+
+```{bash}
+# 检查文件是否存在
+ls -lh data/annotations/merged_raw.json
+
+# 查看文件前几行
+head data/annotations/merged_raw.json
+```
+
+---
+
+# 标注格式转换
+
+## 转换原理
+
+CVAT 导出的 Datumaro 格式需要转换为 COCO 格式。转换脚本 `convert_cvat_to_coco.py` 完成以下工作：
+
+1. 读取 CVAT 的 RLE 格式 mask
+2. 计算每个实例的 bbox 和 area
+3. 转换为标准 COCO 格式
+4. 输出 `annotations.json`
+
+
+## 运行转换
+
+执行格式转换：
+
+```{bash}
+python convert_cvat_to_coco.py
+```
+
+预期输出：
+
+```
+=== Step 1: 读取 merged_raw.json ===
+=== Step 2: 转换为 COCO RLE ===
+=== Step 3: 写入 COCO JSON ===
+转换完成！输出文件：data/annotations/annotations.json
+```
+
+## 验证转换结果
+
+检查生成的 COCO 格式标注：
+
+```{python}
+import json
+
+# 读取转换后的标注文件
+with open('data/annotations/annotations.json', 'r') as f:
+    coco_data = json.load(f)
+
+print(f"图像数量: {len(coco_data['images'])}")
+print(f"标注数量: {len(coco_data['annotations'])}")
+print(f"类别数量: {len(coco_data['categories'])}")
+
+print("\n类别信息:")
+for cat in coco_data['categories']:
+    print(f"  - ID: {cat['id']}, Name: {cat['name']}")
+
+print("\n第一张图像信息:")
+print(json.dumps(coco_data['images'][0], indent=2))
+
+print("\n第一个标注信息:")
+ann = coco_data['annotations'][0].copy()
+if 'segmentation' in ann:
+    ann['segmentation'] = {'counts': '...', 'size': ann['segmentation']['size']}
+print(json.dumps(ann, indent=2))
+```
+
+---
+
+# 模型训练
+
+## 训练脚本说明
+
+`train.py` 的核心功能：
+
+- 自动检测设备（CUDA/CPU）
+- 加载 COCO 格式数据
+- 使用预训练 Mask R-CNN (ResNet50-FPN)
+- 记录训练损失（总损失 + 5 个子损失项）
+- 每个 epoch 保存模型权重
+
+
+## 运行训练
+
+开始训练模型：
+
+```{bash}
+python train.py
+```
+
+::: {.callout-note}
+## 训练时间估计
+- **CPU**：约 2-3 分钟/epoch（20 张图像）
+- **GPU**：约 30-60 秒/epoch
+
+训练过程中会显示进度条和每个 epoch 的损失值。
+:::
+
+## 查看训练损失曲线
+
+训练完成后，查看生成的损失曲线图：
+
+```{bash}
+ls -lh outputs/plots/
+```
+
+使用 Python 加载并显示损失曲线：
+
+```{python}
+import matplotlib.pyplot as plt
+from PIL import Image
+
+# 显示总损失曲线
+img_total = Image.open('outputs/plots/loss_total_iter.png')
+plt.figure(figsize=(10, 6))
+plt.imshow(img_total)
+plt.axis('off')
+plt.title('Total Loss per Iteration')
+plt.tight_layout()
+plt.show()
+```
+
+
+```{python}
+# 显示损失分量曲线
+img_components = Image.open('outputs/plots/loss_components_iter.png')
+plt.figure(figsize=(12, 7))
+plt.imshow(img_components)
+plt.axis('off')
+plt.title('Loss Components per Iteration')
+plt.tight_layout()
+plt.show()
+```
+
+**五个损失项说明**：
+
+- `loss_classifier`：分类损失
+- `loss_box_reg`：边框回归损失
+- `loss_mask`：Mask 分割损失
+- `loss_objectness`：RPN 物体性得分损失
+- `loss_rpn_box_reg`：RPN 边框回归损失
+
+## 检查保存的模型权重
+
+```{bash}
+ls -lh outputs/checkpoints/
+```
+
+---
+
+# 模型推理
+
+## 推理脚本说明
+
+`infer.py` 加载训练好的模型，对测试集进行推理，并可视化预测结果（mask + bbox + 置信度 + 面积）。
+
+## 运行推理
+
+对测试集进行推理：
+
+```{bash}
+python infer.py
+```
+
+预期输出：
+
+```
+Using device: cpu
+Inferencing: 100%|████████████| 7/7 [00:15<00:00,  2.20s/it]
+推理完成，结果已保存到：outputs/infer_results
+```
+
+## 查看推理结果
+
+列出生成的预测结果：
+
+```{bash}
+ls -lh outputs/infer_results/
+```
+
+## 可视化对比
+
+使用 Python 显示原图和预测结果的对比：
+
+```{python}
+import matplotlib.pyplot as plt
+from PIL import Image
+import os
+
+# 选择一张测试图像
+test_img_name = "IMG_20260130_180226.jpg"
+
+# 读取原图和预测结果
+original = Image.open(f'data/test_images/{test_img_name}')
+prediction = Image.open(f'outputs/infer_results/pred_{test_img_name}')
+
+# 并排显示
+fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+
+axes[0].imshow(original)
+axes[0].set_title('Original Image', fontsize=14)
+axes[0].axis('off')
+
+axes[1].imshow(prediction)
+axes[1].set_title('Prediction (Mask + BBox + Score)', fontsize=14)
+axes[1].axis('off')
+
+plt.tight_layout()
+plt.show()
+```
+
+::: {.callout-tip}
+## 可视化说明
+- **绿色半透明区域**：预测的 mask
+- **红色边框**：预测的 bbox
+- **文本标注**：置信度分数 + 实例面积（像素数）
+:::
+
+---
+
+# 性能评估
+
+## 评估指标说明
+
+使用 COCO API 计算标准评估指标：
+
+- **AP@0.5**：IoU 阈值为 0.5 时的平均精度
+- **AP@0.75**：IoU 阈值为 0.75 时的平均精度
+- **AP@[0.5:0.95]** (mAP)：IoU 从 0.5 到 0.95 的平均精度
+- **AR**：平均召回率
+
+## 运行评估
+
+对测试集进行定量评估：
+
+```{bash}
+python evaluate.py
+```
+
+::: {.callout-warning}
+## 前置条件
+评估需要测试集的真值标注文件：`data/annotations/test_annotations.json`（COCO 格式）。请确保该文件存在。
+:::
+
+## 查看评估结果
+
+读取并显示评估结果：
+
+```{python}
+import json
+
+# 读取评估结果
+with open('outputs/evaluation_results.json', 'r') as f:
+    results = json.load(f)
+
+print("=" * 50)
+print("模型性能评估结果")
+print("=" * 50)
+
+for metric, value in results.items():
+    print(f"{metric:30s}: {value:.4f}")
+
+print("=" * 50)
+```
+
+## 结果解读
+
+创建性能分析表格：
+
+```{python}
+import pandas as pd
+
+# 创建结果表格
+metrics_df = pd.DataFrame([
+    {"指标": "AP@0.5", "数值": results.get("AP@0.5", 0), "优秀标准": "> 0.80"},
+    {"指标": "AP@0.75", "数值": results.get("AP@0.75", 0), "优秀标准": "> 0.60"},
+    {"指标": "mAP (AP@0.5:0.95)", "数值": results.get("AP@0.5:0.95", 0), "优秀标准": "> 0.50"},
+    {"指标": "AR (maxDets=100)", "数值": results.get("AR@0.5:0.95 (maxDets=100)", 0), "优秀标准": "> 0.60"}
+])
+
+print(metrics_df.to_string(index=False))
+```
+
+**性能分析示例**：
+
+- **AP@0.5 > 0.80**：模型在宽松标准下表现优秀，能准确定位大部分实例
+- **AP@0.75 > 0.60**：在严格标准下仍保持较高精度，mask 边缘质量良好
+- **mAP > 0.50**：综合性能良好，适合实际应用
+- **AR > 0.60**：召回率较高，漏检率低
+
+## 对比不同 epoch 的模型
+
+评估不同训练阶段的模型性能：
+
+```{bash}
+# 评估 epoch 3 的模型
+python evaluate.py --weight outputs/checkpoints/model_epoch_3.pth --output outputs/eval_epoch3.json
+
+# 评估 epoch 5 的模型
+python evaluate.py --weight outputs/checkpoints/model_epoch_5.pth --output outputs/eval_epoch5.json
+```
+
+对比结果：
+
+```{python}
+import json
+import pandas as pd
+
+# 读取不同 epoch 的评估结果
+results_e3 = json.load(open('outputs/eval_epoch3.json', 'r'))
+results_e5 = json.load(open('outputs/eval_epoch5.json', 'r'))
+
+# 创建对比表格
+comparison = pd.DataFrame({
+    "Metric": list(results_e3.keys()),
+    "Epoch 3": list(results_e3.values()),
+    "Epoch 5": list(results_e5.values())
+})
+
+comparison["Improvement"] = comparison["Epoch 5"] - comparison["Epoch 3"]
+
+print(comparison.to_string(index=False))
+```
+
+---
+
+# 可重复性总结
+
+## 固定随机种子
+
+查看训练脚本中的随机种子设置：
+
+```{python}
+# 展示 train.py 中的 set_seed 函数
+import inspect
+import train
+
+print(inspect.getsource(train.set_seed))
+```
+
+**作用**：
+
+- 确保数据加载顺序一致
+- 确保模型初始化权重一致
+- 确保训练过程可重复
+
+::: {.callout-note}
+即使固定种子，不同硬件（CPU/GPU）或 PyTorch 版本可能仍有微小差异。
+:::
+
+## 环境版本锁定
+
+查看当前环境的依赖版本：
+
+```{bash}
+uv pip freeze
+```
+
+锁定精确版本：
+
+```{bash}
+uv pip freeze > requirements_locked.txt
+```
+
+查看核心依赖版本：
+
+```{python}
+import torch
+import torchvision
+import numpy as np
+import sys
+
+print(f"Python version: {sys.version}")
+print(f"PyTorch version: {torch.__version__}")
+print(f"Torchvision version: {torchvision.__version__}")
+print(f"NumPy version: {np.__version__}")
+```
+
+## 完整工作流程回顾
+
+```{mermaid}
+graph TD
+    A[获取未标注图像] --> B[CVAT 标注]
+    B --> C[导出 Datumaro 格式]
+    C --> D[转换为 COCO 格式]
+    D --> E[训练 Mask R-CNN]
+    E --> F[模型推理]
+    F --> G[性能评估]
+    G --> H[结果分析与报告]
+```
+
+## 可重复性检查清单
+
+生成项目元数据：
+
+```{python}
+import json
+from datetime import datetime
+
+metadata = {
+    "project": "Tomato Instance Segmentation with Mask R-CNN",
+    "date": datetime.now().isoformat(),
+    "python_version": sys.version,
+    "pytorch_version": torch.__version__,
+    "random_seed": 42,
+    "training_params": {
+        "num_epochs": 5,
+        "batch_size": 1,
+        "learning_rate": 0.005,
+        "num_classes": 2
+    },
+    "data": {
+        "train_images": len(os.listdir('data/images')) if os.path.exists('data/images') else 0,
+        "test_images": len(os.listdir('data/test_images')) if os.path.exists('data/test_images') else 0
+    }
+}
+
+# 保存元数据
+with open('outputs/experiment_metadata.json', 'w') as f:
+    json.dump(metadata, f, indent=2)
+
+print(json.dumps(metadata, indent=2))
+```
+
+**可重复性检查清单**：
+
+- ✅ 固定随机种子（`set_seed(42)`）
+- ✅ 锁定依赖版本（`requirements.txt`）
+- ✅ 记录 Python 版本
+- ✅ 记录训练参数
+- ✅ 保存训练日志和损失曲线
+- ✅ 保存模型权重
+- ✅ 记录评估指标
+- ✅ 使用版本控制（Git）
+
+---
+
+# 常见问题与解决方案
+
+## 训练相关
+
+**Q: 训练时显存不足怎么办？**
+
+A: 减小 `batch_size` 或使用更小的输入图像尺寸。
+
+**Q: 训练速度太慢怎么办？**
+
+A: 使用 GPU（CUDA）、减少训练图像数量或减少 epoch 数量。
+
+## 推理相关
+
+**Q: 推理结果不理想怎么办？**
+
+A: 增加训练数据量、调整置信度阈值、增加训练轮数或检查标注质量。
+
+## 性能提升
+
+**Q: 如何提高模型性能？**
+
+A: 提高标注质量、增加训练数据多样性、使用数据增强（翻转、旋转、颜色变换）、调整学习率和训练轮数。
+
+---
+
+# 总结
+
+恭喜完成本讲实验！你已经掌握了：
+
+✅ 实例分割的基本原理  
+✅ CVAT 图像标注工具的使用  
+✅ Mask R-CNN 模型的训练与推理  
+✅ COCO 格式数据的处理  
+✅ 模型性能评估方法  
+✅ 可重复性研究的最佳实践  
+
+**下一步探索**：
+
+- 尝试在自己的数据集上应用实例分割
+- 探索其他实例分割模型（YOLACT、SOLOv2、Mask2Former）
+- 学习模型部署与优化（ONNX、TensorRT）
+- 研究数据增强技术提升模型泛化能力

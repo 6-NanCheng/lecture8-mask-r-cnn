@@ -60,29 +60,9 @@ def train(
         print("  → CUDA 优化: cudnn.benchmark=True, AMP=True, "
               f"num_workers={num_workers}")
 
-    elif device.type == "mps":
-        # MPS (Apple Silicon):
-        #   Mask R-CNN 包含大量不被 MPS 原生支持的算子（NMS, RoIAlign 等），
-        #   这些算子会回退到 CPU，导致频繁的 CPU↔GPU 数据拷贝。
-        #   在 batch_size 较小时，MPS 可能反而比纯 CPU 慢。
-        #   这里给出警告并提供回退选项。
-        num_workers = 0  # MPS 下多进程 DataLoader 容易出问题
-        print("  → MPS 设备检测到 (Apple Silicon GPU)")
-        print("    ⚠ 注意: Mask R-CNN 在 MPS 上可能比 CPU 慢，")
-        print("    因为许多算子 (NMS, RoIAlign) 不被 MPS 原生支持，会回退到 CPU。")
-        print("    如果训练过慢，建议设置环境变量 DEVICE=cpu 强制使用 CPU。")
-
     else:
         num_workers = min(2, os.cpu_count() or 0)
         print(f"  → CPU 模式, num_workers={num_workers}")
-
-    # 允许通过环境变量强制覆盖设备选择
-    force_device = os.environ.get("DEVICE", "").lower()
-    if force_device in ("cpu", "cuda", "mps"):
-        device = torch.device(force_device)
-        print(f"  → 环境变量 DEVICE={force_device}，已覆盖设备为: {device}")
-        if force_device != "cuda":
-            use_amp = False
 
     set_seed(42)
 
