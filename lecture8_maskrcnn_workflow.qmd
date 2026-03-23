@@ -178,19 +178,82 @@ CVAT 导出的 Datumaro 格式需要转换为 COCO 格式。转换脚本 `conver
 
 ## 运行转换
 
-执行格式转换：
+首先读取 CVAT 导出的标注文件并初始化 COCO 格式结构：
 
-```{bash}
-python convert_cvat_to_coco.py
+```{python}
+import os
+import json
+import numpy as np
+from pycocotools import mask as mask_utils
+
+INPUT_JSON = "data/annotations/merged_raw.json"
+OUTPUT_JSON = "data/annotations/annotations.json"
+
+with open(INPUT_JSON, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+coco = {
+    "images": [],
+    "annotations": [],
+    "categories": [{"id": 1, "name": "tomato", "supercategory": "plant"}]
+}
 ```
 
-预期输出：
+遍历每张图像，提取标注信息并计算 bbox 和 area：
 
+```{python}
+ann_id = 1
+img_id = 1
+
+for item in data["items"]:
+    img = item["image"]
+    coco["images"].append({
+        "id": img_id,
+        "file_name": img["path"],
+        "width": img["size"][0],
+        "height": img["size"][1]
+    })
+    
+    if "annotations" in item:
+        for ann in item["annotations"]:
+            if ann["type"] != "mask":
+                continue
+            
+            rle = ann["rle"]
+            mask = mask_utils.decode(rle)
+            ys, xs = np.where(mask == 1)
+            
+            if len(xs) > 0:
+                x_min, x_max = xs.min(), xs.max()
+                y_min, y_max = ys.min(), ys.max()
+                bbox = [int(x_min), int(y_min), int(x_max - x_min + 1), int(y_max - y_min + 1)]
+                area = int(mask.sum())
+            else:
+                bbox = [0, 0, 0, 0]
+                area = 0
+            
+            coco["annotations"].append({
+                "id": ann_id,
+                "image_id": img_id,
+                "category_id": 1,
+                "segmentation": {"counts": rle["counts"], "size": rle["size"]},
+                "bbox": bbox,
+                "area": area,
+                "iscrowd": 0
+            })
+            ann_id += 1
+    
+    img_id += 1
 ```
-=== Step 1: 读取 merged_raw.json ===
-=== Step 2: 转换为 COCO RLE ===
-=== Step 3: 写入 COCO JSON ===
-转换完成！输出文件：data/annotations/annotations.json
+
+保存转换后的 COCO 格式标注文件：
+
+```{python}
+os.makedirs(os.path.dirname(OUTPUT_JSON), exist_ok=True)
+with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+    json.dump(coco, f, indent=2)
+
+print(f"转换完成！共处理 {len(coco['images'])} 张图像，{len(coco['annotations'])} 个标注")
 ```
 
 ## 验证转换结果
@@ -239,10 +302,141 @@ print(json.dumps(ann, indent=2))
 
 ## 运行训练
 
-开始训练模型：
+首先定义数据集类和模型构建函数：
 
-```{bash}
-python train.py
+```{python}
+import os
+import torch
+import random
+import numpy as np
+from PIL import Image
+import torchvision
+import torchvision.transforms as T
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from pycocotools.coco import COCO
+from pycocotools import mask as mask_utils
+
+# 固定随机种子
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+
+class COCOTomatoDataset(torch.utils.data.Dataset):
+    def __init__(self, img_dir, ann_file, transforms=None):
+        self.img_dir = img_dir
+        self.coco = COCO(ann_file)
+        self.transforms = transforms
+        self.ids = list(sorted(self.coco.imgs.keys()))
+
+    def __getitem__(self, index):
+        img_id = self.ids[index]
+        ann_ids = self.coco.getAnnIds(imgIds=img_id)
+        anns = self.coco.loadAnns(ann_ids)
+        
+        img_info = self.coco.loadImgs(img_id)[0]
+        img_path = os.path.join(self.img_dir, img_info["file_name"])
+        img = Image.open(img_path).convert("RGB")
+        
+        boxes = []
+        masks = []
+        labels = []
+        
+        for ann in anns:
+            if "bbox" not in ann:
+                continue
+            x, y, w, h = ann["bbox"]
+            boxes.append([x, y, x + w, y + h])
+            masks.append(mask_utils.decode(ann["segmentation"]))
+            labels.append(1)
+        
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+        
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "masks": masks,
+            "image_id": torch.tensor([img_id]),
+            "area": torch.as_tensor([ann["area"] for ann in anns], dtype=torch.float32),
+            "iscrowd": torch.zeros((len(anns),), dtype=torch.int64)
+        }
+        
+        if self.transforms:
+            img = self.transforms(img)
+        
+        return img, target
+
+    def __len__(self):
+        return len(self.ids)
+
+def get_model(num_classes=2):
+    model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
+```
+
+准备训练数据和模型：
+
+```{python}
+from torch.utils.data import DataLoader
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+transforms = T.Compose([T.ToTensor()])
+dataset = COCOTomatoDataset("data/images", "data/annotations/annotations.json", transforms=transforms)
+train_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+
+model = get_model(num_classes=2)
+model.to(device)
+
+params = [p for p in model.parameters() if p.requires_grad]
+optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+```
+
+执行训练循环：
+
+```{python}
+from tqdm import tqdm
+
+num_epochs = 5
+iter_loss_history = []
+loss_classifier_history = []
+loss_box_reg_history = []
+loss_mask_history = []
+loss_objectness_history = []
+loss_rpn_box_reg_history = []
+
+os.makedirs("outputs/checkpoints", exist_ok=True)
+
+for epoch in range(num_epochs):
+    model.train()
+    epoch_losses = []
+    
+    for images, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        images = [img.to(device) for img in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+        
+        iter_loss_history.append(losses.item())
+        loss_classifier_history.append(loss_dict["loss_classifier"].item())
+        loss_box_reg_history.append(loss_dict["loss_box_reg"].item())
+        loss_mask_history.append(loss_dict["loss_mask"].item())
+        loss_objectness_history.append(loss_dict["loss_objectness"].item())
+        loss_rpn_box_reg_history.append(loss_dict["loss_rpn_box_reg"].item())
+        epoch_losses.append(losses.item())
+    
+    avg_loss = np.mean(epoch_losses)
+    print(f"Epoch {epoch+1} - Average Loss: {avg_loss:.4f}")
+    torch.save(model.state_dict(), f"outputs/checkpoints/model_epoch_{epoch+1}.pth")
 ```
 
 ::: {.callout-note}
@@ -255,37 +449,35 @@ python train.py
 
 ## 查看训练损失曲线
 
-训练完成后，查看生成的损失曲线图：
-
-```{bash}
-ls -lh outputs/plots/
-```
-
-使用 Python 加载并显示损失曲线：
+绘制总损失曲线：
 
 ```{python}
 import matplotlib.pyplot as plt
-from PIL import Image
 
-# 显示总损失曲线
-img_total = Image.open('outputs/plots/loss_total_iter.png')
 plt.figure(figsize=(10, 6))
-plt.imshow(img_total)
-plt.axis('off')
-plt.title('Total Loss per Iteration')
-plt.tight_layout()
+plt.plot(iter_loss_history, label="Total Loss")
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.title("Total Loss per Iteration")
+plt.grid(True)
+plt.legend()
 plt.show()
 ```
 
+绘制各损失分量曲线：
 
 ```{python}
-# 显示损失分量曲线
-img_components = Image.open('outputs/plots/loss_components_iter.png')
 plt.figure(figsize=(12, 7))
-plt.imshow(img_components)
-plt.axis('off')
-plt.title('Loss Components per Iteration')
-plt.tight_layout()
+plt.plot(loss_classifier_history, label="loss_classifier")
+plt.plot(loss_box_reg_history, label="loss_box_reg")
+plt.plot(loss_mask_history, label="loss_mask")
+plt.plot(loss_objectness_history, label="loss_objectness")
+plt.plot(loss_rpn_box_reg_history, label="loss_rpn_box_reg")
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.title("Loss Components per Iteration")
+plt.grid(True)
+plt.legend()
 plt.show()
 ```
 
@@ -313,18 +505,80 @@ ls -lh outputs/checkpoints/
 
 ## 运行推理
 
-对测试集进行推理：
+加载训练好的模型：
 
-```{bash}
-python infer.py
+```{python}
+import os
+import torch
+import torchvision
+from torchvision.transforms import functional as F
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from PIL import Image
+import numpy as np
+import cv2
+from tqdm import tqdm
+
+def get_model(num_classes=2):
+    model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
+
+device = torch.device("cpu")
+print(f"Using device: {device}")
+
+model = get_model(num_classes=2)
+model.load_state_dict(torch.load("outputs/checkpoints/model_epoch_5.pth", map_location=device))
+model.to(device)
+model.eval()
 ```
 
-预期输出：
+对测试集进行推理并可视化结果：
 
-```
-Using device: cpu
-Inferencing: 100%|████████████| 7/7 [00:15<00:00,  2.20s/it]
-推理完成，结果已保存到：outputs/infer_results
+```{python}
+test_dir = "data/test_images"
+save_dir = "outputs/infer_results"
+os.makedirs(save_dir, exist_ok=True)
+
+exts = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
+img_files = [f for f in os.listdir(test_dir) if os.path.splitext(f)[1].lower() in exts]
+
+for fname in tqdm(img_files, desc="Inferencing"):
+    img_path = os.path.join(test_dir, fname)
+    image = Image.open(img_path).convert("RGB")
+    img_tensor = F.to_tensor(image).to(device)
+    
+    with torch.no_grad():
+        outputs = model([img_tensor])[0]
+    
+    img = np.array(image)[:, :, ::-1].copy()
+    boxes = outputs["boxes"].cpu().numpy()
+    scores = outputs["scores"].cpu().numpy()
+    masks = outputs["masks"].cpu().numpy()
+    
+    for i in range(len(boxes)):
+        if scores[i] < 0.5:
+            continue
+        
+        box = boxes[i].astype(int)
+        mask = masks[i, 0]
+        mask_bin = (mask > 0.5).astype(np.uint8)
+        area = int(mask_bin.sum())
+        
+        contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        overlay = img.copy()
+        cv2.drawContours(overlay, contours, -1, (0, 255, 0), thickness=-1)
+        img = cv2.addWeighted(overlay, 0.4, img, 0.6, 0)
+        
+        cv2.rectangle(img, (box[0], box[1]), (box[2], box[3]), (0, 0, 255), 2)
+        text = f"{scores[i]:.2f}, A={area}"
+        cv2.putText(img, text, (box[0], max(0, box[1] - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    
+    save_path = os.path.join(save_dir, f"pred_{fname}")
+    cv2.imwrite(save_path, img)
+
+print(f"推理完成，结果已保存到：{save_dir}")
 ```
 
 ## 查看推理结果
@@ -390,8 +644,104 @@ plt.show()
 
 对测试集进行定量评估：
 
-```{bash}
-python evaluate.py
+```{python}
+import os
+import json
+import torch
+import torchvision
+from torchvision.transforms import functional as F
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from PIL import Image
+from tqdm import tqdm
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
+from pycocotools import mask as mask_utils
+import numpy as np
+
+def get_model(num_classes=2):
+    model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
+
+device = torch.device("cpu")
+print(f"Using device: {device}")
+
+# 加载模型
+model = get_model(num_classes=2)
+model.load_state_dict(torch.load("outputs/checkpoints/model_epoch_5.pth", map_location=device))
+model.to(device)
+model.eval()
+
+# 加载真值标注
+gt_file = "data/annotations/test_annotations.json"
+coco_gt = COCO(gt_file)
+
+# 运行推理
+results = []
+img_ids = coco_gt.getImgIds()
+
+for img_id in tqdm(img_ids, desc="Inferencing"):
+    img_info = coco_gt.loadImgs(img_id)[0]
+    img_path = os.path.join("data/test_images", img_info["file_name"])
+    
+    if not os.path.exists(img_path):
+        print(f"Warning: {img_path} not found, skipping...")
+        continue
+    
+    image = Image.open(img_path).convert("RGB")
+    img_tensor = F.to_tensor(image).to(device)
+    
+    with torch.no_grad():
+        outputs = model([img_tensor])[0]
+    
+    boxes = outputs["boxes"].cpu().numpy()
+    scores = outputs["scores"].cpu().numpy()
+    masks = outputs["masks"].cpu().numpy()
+    
+    for i in range(len(boxes)):
+        if scores[i] < 0.5:
+            continue
+        
+        box = boxes[i]
+        mask = masks[i, 0]
+        mask_bin = (mask > 0.5).astype('uint8')
+        rle = mask_utils.encode(np.asfortranarray(mask_bin))
+        rle['counts'] = rle['counts'].decode('utf-8')
+        
+        results.append({
+            "image_id": img_id,
+            "category_id": 1,
+            "segmentation": rle,
+            "score": float(scores[i]),
+            "bbox": [float(box[0]), float(box[1]), 
+                    float(box[2] - box[0]), float(box[3] - box[1])]
+        })
+
+# 评估
+if len(results) > 0:
+    coco_dt = coco_gt.loadRes(results)
+    coco_eval = COCOeval(coco_gt, coco_dt, 'segm')
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+    
+    stats = {
+        "AP@0.5:0.95": float(coco_eval.stats[0]),
+        "AP@0.5": float(coco_eval.stats[1]),
+        "AP@0.75": float(coco_eval.stats[2]),
+        "AR@0.5:0.95 (maxDets=1)": float(coco_eval.stats[6]),
+        "AR@0.5:0.95 (maxDets=10)": float(coco_eval.stats[7]),
+        "AR@0.5:0.95 (maxDets=100)": float(coco_eval.stats[8])
+    }
+    
+    os.makedirs("outputs", exist_ok=True)
+    with open("outputs/evaluation_results.json", "w") as f:
+        json.dump(stats, f, indent=2)
+    
+    print(f"\nResults saved to: outputs/evaluation_results.json")
+else:
+    print("No predictions generated. Check your model and test data.")
 ```
 
 ::: {.callout-warning}
@@ -485,14 +835,12 @@ print(comparison.to_string(index=False))
 
 ## 固定随机种子
 
-查看训练脚本中的随机种子设置：
+在训练代码中，我们使用了以下方式固定随机种子：
 
-```{python}
-# 展示 train.py 中的 set_seed 函数
-import inspect
-import train
-
-print(inspect.getsource(train.set_seed))
+```python
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
 ```
 
 **作用**：
@@ -515,23 +863,10 @@ uv pip freeze
 
 锁定精确版本：
 
-```{bash}
-uv pip freeze > requirements_locked.txt
+```bash
+uv pip freeze > requirements.txt
 ```
 
-查看核心依赖版本：
-
-```{python}
-import torch
-import torchvision
-import numpy as np
-import sys
-
-print(f"Python version: {sys.version}")
-print(f"PyTorch version: {torch.__version__}")
-print(f"Torchvision version: {torchvision.__version__}")
-print(f"NumPy version: {np.__version__}")
-```
 
 ## 完整工作流程回顾
 
@@ -545,76 +880,6 @@ graph TD
     F --> G[性能评估]
     G --> H[结果分析与报告]
 ```
-
-## 可重复性检查清单
-
-生成项目元数据：
-
-```{python}
-import json
-from datetime import datetime
-
-metadata = {
-    "project": "Tomato Instance Segmentation with Mask R-CNN",
-    "date": datetime.now().isoformat(),
-    "python_version": sys.version,
-    "pytorch_version": torch.__version__,
-    "random_seed": 42,
-    "training_params": {
-        "num_epochs": 5,
-        "batch_size": 1,
-        "learning_rate": 0.005,
-        "num_classes": 2
-    },
-    "data": {
-        "train_images": len(os.listdir('data/images')) if os.path.exists('data/images') else 0,
-        "test_images": len(os.listdir('data/test_images')) if os.path.exists('data/test_images') else 0
-    }
-}
-
-# 保存元数据
-with open('outputs/experiment_metadata.json', 'w') as f:
-    json.dump(metadata, f, indent=2)
-
-print(json.dumps(metadata, indent=2))
-```
-
-**可重复性检查清单**：
-
-- ✅ 固定随机种子（`set_seed(42)`）
-- ✅ 锁定依赖版本（`requirements.txt`）
-- ✅ 记录 Python 版本
-- ✅ 记录训练参数
-- ✅ 保存训练日志和损失曲线
-- ✅ 保存模型权重
-- ✅ 记录评估指标
-- ✅ 使用版本控制（Git）
-
----
-
-# 常见问题与解决方案
-
-## 训练相关
-
-**Q: 训练时显存不足怎么办？**
-
-A: 减小 `batch_size` 或使用更小的输入图像尺寸。
-
-**Q: 训练速度太慢怎么办？**
-
-A: 使用 GPU（CUDA）、减少训练图像数量或减少 epoch 数量。
-
-## 推理相关
-
-**Q: 推理结果不理想怎么办？**
-
-A: 增加训练数据量、调整置信度阈值、增加训练轮数或检查标注质量。
-
-## 性能提升
-
-**Q: 如何提高模型性能？**
-
-A: 提高标注质量、增加训练数据多样性、使用数据增强（翻转、旋转、颜色变换）、调整学习率和训练轮数。
 
 ---
 
