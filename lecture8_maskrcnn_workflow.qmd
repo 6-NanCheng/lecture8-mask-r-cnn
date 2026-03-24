@@ -1,7 +1,7 @@
 ---
 title: "实例分割 Mask R-CNN 完整工作流程"
 subtitle: "从图像标注到模型训练与性能评估"
-author: "gaoch"
+author: "黄俊豪、高春辉"
 date: today
 format:
   html:
@@ -123,10 +123,10 @@ else:
 检查测试数据是否存在：
 
 ```{python}
-test_dir = Path("data/test/images")
+TEST_DIR = Path("data/test/images")
 
-if test_dir.exists():
-    test_images = [f for f in test_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
+if TEST_DIR.exists():
+    test_images = [f for f in TEST_DIR.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
     print(f"\n测试图像数量: {len(test_images)}")
     print("\n测试图像列表:")
     for img in sorted(test_images):
@@ -164,16 +164,14 @@ else:
 
 从 CVAT 导出后，将下载得到的压缩包解压并移动到 `data/self/annotations` 文件夹中。
 
-![](screenshot/1.jpg)
-
 验证标注文件：
 
 ```{python}
 from pathlib import Path
 
-ann_dir = Path("data/example/annotations")
-# ann_dir = Path("data/self/annotations")
-json_files = list(ann_dir.glob("*.json"))
+ANN_DIR = Path("data/example/annotations")
+# ANN_DIR = Path("data/self/annotations")
+json_files = list(ANN_DIR.glob("*.json"))
 
 if json_files:
     ann_file = json_files[0]
@@ -181,7 +179,7 @@ if json_files:
     print(f"文件: {ann_file}")
     print(f"大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
 else:
-    print(f"目录 {ann_dir} 中未找到任何 JSON 格式的标注文件")
+    print(f"目录 {ANN_DIR} 中未找到任何 JSON 格式的标注文件")
 ```
 
 如果没有找到任何 JSON 格式的标注文件，那么请参照上述提示进行图片标注并将标注结果保存到 `data/self/annotations` 文件夹中。
@@ -511,9 +509,9 @@ plt.show()
 ```{python}
 from pathlib import Path
 
-checkpoint_dir = Path("outputs/checkpoints")
-if checkpoint_dir.exists():
-    checkpoints = sorted(checkpoint_dir.glob("*.pth"))
+CHECKPOINT_DIR = Path("outputs/checkpoints")
+if CHECKPOINT_DIR.exists():
+    checkpoints = sorted(CHECKPOINT_DIR.glob("*.pth"))
     print(f"保存的模型权重 ({len(checkpoints)} 个):\n")
     for ckpt in checkpoints:
         size_mb = ckpt.stat().st_size / (1024 * 1024)
@@ -589,11 +587,11 @@ def compute_mask_iou(mask_pred, mask_gt):
     return inter / union if union > 0 else 0
 
 # 推理 + IoU 评估
-test_dir = "data/test/test_images"
-ann_path = "data/test/annotations/annotations.json"
+TEST_DIR = "data/test/test_images"
+TEST_ANNOTATION = "data/test/annotations/annotations.json"
 
 # 加载真实标注
-with open(ann_path, "r", encoding="utf-8") as f:
+with open(TEST_ANNOTATION, "r", encoding="utf-8") as f:
     gt = json.load(f)
 
 # 按 image_id 分组
@@ -606,14 +604,14 @@ for ann in gt["annotations"]:
 
 # 图片列表
 exts = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
-img_files = [f for f in os.listdir(test_dir) if os.path.splitext(f)[1].lower() in exts]
+img_files = [f for f in os.listdir(TEST_DIR) if os.path.splitext(f)[1].lower() in exts]
 
 bbox_iou_list = []
 mask_iou_list = []
 inference_results = []
 
 for fname in tqdm(img_files, desc="Inferencing"):
-    img_path = os.path.join(test_dir, fname)
+    img_path = os.path.join(TEST_DIR, fname)
     image = Image.open(img_path).convert("RGB")
     img_tensor = F.to_tensor(image).to(device)
 
