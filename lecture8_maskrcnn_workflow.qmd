@@ -76,6 +76,39 @@ print("Environment setup successful!")
 
 # 数据准备
 
+## 数据源配置
+
+::: {.callout-tip}
+## 一键切换数据源
+修改下面的 `DATA_SOURCE` 变量即可在 example 数据和 self 数据之间切换。
+- `"example"`：使用示例数据（已标注好）
+- `"self"`：使用自己的数据（需自行标注）
+:::
+
+```{python}
+#| label: config-data-source
+from pathlib import Path
+
+# ========== 数据源配置 ==========
+# 可选值: "example" 或 "self"
+DATA_SOURCE = "example"
+# ================================
+
+# 验证配置
+if DATA_SOURCE not in ["example", "self"]:
+    raise ValueError(f"DATA_SOURCE 必须是 'example' 或 'self'，当前值: {DATA_SOURCE}")
+
+# 自动设置路径
+TRAIN_DIR = Path(f"data/{DATA_SOURCE}/images")
+ANN_DIR = Path(f"data/{DATA_SOURCE}/annotations")
+OUTPUT_JSON = f"data/{DATA_SOURCE}/annotations/annotations.json"
+
+print(f"✓ 当前数据源: {DATA_SOURCE}")
+print(f"✓ 训练图像目录: {TRAIN_DIR}")
+print(f"✓ 标注文件目录: {ANN_DIR}")
+print(f"✓ 输出标注文件: {OUTPUT_JSON}")
+```
+
 ## 项目目录结构
 
 查看当前项目结构：
@@ -99,15 +132,15 @@ lecture8-maskrcnn/
 ```{python}
 #| label: check-train-images
 import os
-from pathlib import Path
-
-TRAIN_DIR = Path("data/self/images")
 
 if TRAIN_DIR.exists():
     train_images = [f for f in TRAIN_DIR.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
-    print(f"训练图像数量: {len(train_images)}")
+    print(f"✓ 训练图像数量: {len(train_images)}")
+    if len(train_images) > 0:
+        print(f"✓ 示例图像: {train_images[0].name}")
 else:
-    print("训练图像不存在")
+    print(f"✗ 训练图像目录不存在: {TRAIN_DIR}")
+    print(f"  请确保已将图像放入该目录")
 
 ```
 
@@ -170,20 +203,17 @@ else:
 
 ```{python}
 #| label: verify-annotation-file
-from pathlib import Path
-
-ANN_DIR = Path("data/self/annotations")
-json_files = list(ANN_DIR.glob("*.json"))
-ANN_FILE = None
+json_files = [f for f in ANN_DIR.glob("*.json") if f.name != "annotations.json"]
 
 if json_files:
-    global ANN_FILE
     ANN_FILE = json_files[0]
     file_size = ANN_FILE.stat().st_size
-    print(f"文件: {ANN_FILE}")
-    print(f"大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+    print(f"✓ 找到标注文件: {ANN_FILE.name}")
+    print(f"✓ 文件大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
 else:
-    print(f"目录 {ANN_DIR} 中未找到任何 JSON 格式的标注文件")
+    print(f"✗ 目录 {ANN_DIR} 中未找到 CVAT 导出的 JSON 文件")
+    print(f"  请先在 CVAT 中标注图像并导出 Datumaro 格式")
+    ANN_FILE = None
 ```
 
 如果没有找到任何 JSON 格式的标注文件，那么请参照上述提示进行图片标注并将标注结果保存到 `data/self/annotations` 文件夹中。
@@ -213,8 +243,10 @@ import json
 import numpy as np
 from pycocotools import mask as mask_utils
 
+if ANN_FILE is None:
+    raise ValueError("未找到标注文件，请先完成标注并导出")
+
 INPUT_JSON = ANN_FILE
-OUTPUT_JSON = "data/self/annotations/annotations.json"
 
 with open(INPUT_JSON, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -224,6 +256,9 @@ coco = {
     "annotations": [],
     "categories": [{"id": 1, "name": "tomato", "supercategory": "plant"}]
 }
+
+print(f"✓ 读取标注文件: {INPUT_JSON.name}")
+print(f"✓ 输出路径: {OUTPUT_JSON}")
 ```
 
 遍历每张图像，提取标注信息并计算 bbox 和 area：
