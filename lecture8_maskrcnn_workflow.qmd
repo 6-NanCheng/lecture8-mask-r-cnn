@@ -60,6 +60,7 @@ uv pip install -r requirements.txt
 验证环境安装：
 
 ```{python}
+#| label: verify-environment
 import torch
 import torchvision
 from pycocotools import mask as mask_utils
@@ -96,11 +97,11 @@ lecture8-maskrcnn/
 验证训练图像是否就位：
 
 ```{python}
+#| label: check-train-images
 import os
 from pathlib import Path
 
-TRAIN_DIR = Path("data/example/images")
-# TRAIN_DIR = Path("data/self/images")
+TRAIN_DIR = Path("data/self/images")
 
 if TRAIN_DIR.exists():
     train_images = [f for f in TRAIN_DIR.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
@@ -123,6 +124,7 @@ else:
 检查测试数据是否存在：
 
 ```{python}
+#| label: check-test-images
 TEST_DIR = Path("data/test/images")
 
 if TEST_DIR.exists():
@@ -167,16 +169,18 @@ else:
 验证标注文件：
 
 ```{python}
+#| label: verify-annotation-file
 from pathlib import Path
 
-ANN_DIR = Path("data/example/annotations")
-# ANN_DIR = Path("data/self/annotations")
+ANN_DIR = Path("data/self/annotations")
 json_files = list(ANN_DIR.glob("*.json"))
+ANN_FILE = None
 
 if json_files:
-    ann_file = json_files[0]
-    file_size = ann_file.stat().st_size
-    print(f"文件: {ann_file}")
+    global ANN_FILE
+    ANN_FILE = json_files[0]
+    file_size = ANN_FILE.stat().st_size
+    print(f"文件: {ANN_FILE}")
     print(f"大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
 else:
     print(f"目录 {ANN_DIR} 中未找到任何 JSON 格式的标注文件")
@@ -203,14 +207,14 @@ CVAT 导出的 Datumaro 格式需要转换为 COCO 格式。转换工作：
 首先读取 CVAT 导出的标注文件并初始化 COCO 格式结构：
 
 ```{python}
+#| label: convert-init-coco
 import os
 import json
 import numpy as np
 from pycocotools import mask as mask_utils
 
-INPUT_JSON = ann_file
-OUTPUT_JSON = "data/example/annotations/annotations.json"
-#OUTPUT_JSON = "data/self/annotations/annotations.json"
+INPUT_JSON = ANN_FILE
+OUTPUT_JSON = "data/self/annotations/annotations.json"
 
 with open(INPUT_JSON, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -225,6 +229,7 @@ coco = {
 遍历每张图像，提取标注信息并计算 bbox 和 area：
 
 ```{python}
+#| label: convert-process-annotations
 ann_id = 1
 img_id = 1
 
@@ -272,6 +277,7 @@ for item in data["items"]:
 保存转换后的 COCO 格式标注文件：
 
 ```{python}
+#| label: convert-save-coco
 os.makedirs(os.path.dirname(OUTPUT_JSON), exist_ok=True)
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
     json.dump(coco, f, indent=2)
@@ -284,6 +290,7 @@ print(f"转换完成！共处理 {len(coco['images'])} 张图像，{len(coco['an
 检查生成的 COCO 格式标注：
 
 ```{python}
+#| label: verify-coco-conversion
 import json
 
 # 读取转换后的标注文件
@@ -320,6 +327,7 @@ print(json.dumps(coco_data['images'][0], indent=2))
 首先定义数据集类和模型构建函数：
 
 ```{python}
+#| label: train-define-dataset-model
 import os
 import torch
 import random
@@ -337,9 +345,9 @@ np.random.seed(42)
 torch.manual_seed(42)
 
 class COCOTomatoDataset(torch.utils.data.Dataset):
-    def __init__(self, img_dir, ann_file, transforms=None):
+    def __init__(self, img_dir, ANN_FILE, transforms=None):
         self.img_dir = img_dir
-        self.coco = COCO(ann_file)
+        self.coco = COCO(ANN_FILE)
         self.transforms = transforms
         self.ids = list(sorted(self.coco.imgs.keys()))
 
@@ -395,6 +403,7 @@ def get_model(num_classes=2):
 准备训练数据和模型：
 
 ```{python}
+#| label: train-prepare-data-model
 from torch.utils.data import DataLoader
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -414,6 +423,7 @@ optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
 执行训练循环：
 
 ```{python}
+#| label: train-loop
 from tqdm import tqdm
 
 num_epochs = 5
@@ -467,6 +477,7 @@ for epoch in range(num_epochs):
 绘制总损失曲线：
 
 ```{python}
+#| label: fig-loss-total
 import matplotlib.pyplot as plt
 
 plt.figure(figsize=(10, 6))
@@ -482,6 +493,7 @@ plt.show()
 绘制各损失分量曲线：
 
 ```{python}
+#| label: fig-loss-components
 plt.figure(figsize=(12, 7))
 plt.plot(loss_classifier_history, label="loss_classifier")
 plt.plot(loss_box_reg_history, label="loss_box_reg")
@@ -507,6 +519,7 @@ plt.show()
 ## 检查保存的模型权重
 
 ```{python}
+#| label: check-model-weights
 from pathlib import Path
 
 CHECKPOINT_DIR = Path("outputs/checkpoints")
@@ -531,6 +544,7 @@ else:
 加载训练好的模型：
 
 ```{python}
+#| label: infer-load-model
 import os
 import torch
 import torchvision
@@ -566,6 +580,7 @@ model.eval()
 对测试集进行推理并评估结果：
 
 ```{python}
+#| label: infer-evaluate
 # IoU 计算（BBox）
 def compute_bbox_iou(box1, box2):
     x1, y1, w1, h1 = box1
@@ -671,6 +686,7 @@ print("======================\n")
 显示前几张测试图像的原图和预测结果对比：
 
 ```{python}
+#| label: fig-visualize-results
 import matplotlib.pyplot as plt
 
 def visualize_all_masks(original, gt_masks, pred_masks, fname):
