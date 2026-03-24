@@ -1,107 +1,139 @@
-# 🍅 Tomato Instance Segmentation with Mask R-CNN (PyTorch)
+# 🍅 Tomato Instance Segmentation with Mask R-CNN
 
-本项目使用 **PyTorch + Mask R-CNN** 实现番茄植株的实例分割，支持 **CPU训练**，适合课程教学与小规模实验。  
-数据采用 **COCO 格式（RLE segmentation）**，训练过程会自动生成损失曲线图。
+本项目使用 **PyTorch + Mask R-CNN** 实现番茄植株的实例分割，涵盖从数据标注到模型训练与性能评估的完整工作流程。所有代码集成在一个 **Quarto Notebook** (`lecture8_maskrcnn_workflow.qmd`) 中，推荐在 **Positron** IDE 中完成实验。
 
 ---
 
 ## 📂 项目结构
 
 ```
-maskrcnn/
-│
-├── train.py                 # 训练脚本（CPU）
-├── dataset.py               # COCO 数据集加载（含 RLE mask 解码）
-├── model.py                 # Mask R-CNN 模型构建
-├── infer.py                 # 推理脚本
-│
+lecture8-maskrcnn/
 ├── data/
-│   ├── images/              # 训练图片（不上传）
-│   ├── annotations/         # 标注文件（不上传）
-│   └── test_images/         # 推理图片（不上传）
-│
+│   ├── example/                # 示例数据（含标注好的图像和标注文件）
+│   │   ├── images/             # 示例训练图像
+│   │   └── annotations/        # 示例标注文件（Datumaro JSON + COCO JSON）
+│   ├── self/                   # 学生自己的数据（需自行下载图像并完成标注）
+│   │   ├── images/             # 自己的训练图像
+│   │   ├── annotations/        # 自己的标注文件
+│   │   └── README.md           # 按学号下载图片的链接
+│   └── test/                   # 公共测试集（随仓库提供，所有学生使用相同数据）
+│       ├── images/             # 测试图像
+│       └── annotations/        # 测试标注文件
 ├── outputs/
-│   ├── checkpoints/         # 模型权重（不上传）
-│   └── plots/               # 损失曲线（不上传）
-│
-├── requirements.txt         # 依赖列表
-├── .gitignore               # 忽略数据与输出
-└── README.md                # 项目说明
+│   └── checkpoints/            # 训练生成的模型权重（不上传）
+├── example/                    # 推理结果示例图
+├── lecture8_maskrcnn_workflow.qmd   # ⭐ 完整工作流 Quarto Notebook
+├── requirements.txt            # Python 依赖列表
+├── .gitignore
+└── README.md
 ```
 
 ---
 
+## 🧰 环境配置
 
-## 🧰 环境的创建与依赖安装
+本项目使用 **uv** 管理 Python 虚拟环境：
 
 ```bash
 # 创建虚拟环境
 uv venv --python 3.10
 
-# 激活环境
-source .venv/bin/activate   # Mac/Linux
-# 或 .venv\Scripts\activate      # Windows
+# 激活环境（Mac/Linux）
+source .venv/bin/activate
+# Windows: .venv\Scripts\activate
 
-# 使用uv安装依赖
+# 安装依赖
 uv pip install -r requirements.txt
 ```
 
+> **Positron 配置**：按 `Cmd+Shift+P` (Mac) 或 `Ctrl+Shift+P` (Windows)，输入 `Python: Select Interpreter`，选择 `.venv/bin/python`。
+
 ---
 
-## 🧾 数据转换
+## 🚀 完整工作流程
 
-把标注好的 **Train.json** 放入 data/annotations 下面；把训练集图片放入 data/images 下面；把公共测试集放入 data/test_images 下面。
+所有步骤均在 `lecture8_maskrcnn_workflow.qmd` 中以可执行代码块呈现，依次完成以下任务：
 
-```bash
-# 定位到工作目录
-cd 工作目录
-
-# 转换为可训练的标注格式
-# 运行前请在脚本convert_cvat_to_coco.py里面将INPUT_JSON  = "data/annotations/merged_raw.json"中的 merged_raw.json 修改为自己的名称后保存
-python convert_cvat_to_coco.py
-
+```mermaid
+graph TD
+    A[获取未标注图像] --> B[CVAT 标注]
+    B --> C[导出 Datumaro 格式]
+    C --> D[转换为 COCO 格式]
+    D --> E[训练 Mask R-CNN]
+    E --> F[模型推理]
+    F --> G[性能评估]
+    G --> H[结果分析与报告]
 ```
 
-### 运行结束后会生成训练所需json（annotations.json）：
+### 1️⃣ 数据准备
 
-```bash
-data/annotations/
-└── annotations.json   # 训练所需格式的json
+- 按学号从 [`data/self/README.md`](data/self/README.md) 中下载对应的图片压缩包，解压放入 `data/self/images/`
+- 公共测试集已随仓库提供（`data/test/`）
+- 也可先使用 `data/example/` 中的示例数据熟悉流程
 
-```
-## 🚀 训练模型（CPU）
+### 2️⃣ CVAT 图像标注
 
-```bash
-python train.py
-```
+使用在线版 [CVAT](https://app.cvat.ai) 进行标注：
 
-### 训练结束后会生成训练结果：
+1. 注册并登录 CVAT
+2. 创建项目 `tomato_instance_segmentation`，添加标签 `plant`
+3. 上传训练图像，使用 **Polygon 工具** 逐个标注番茄植株实例
+4. 导出标注，选择 **Datumaro 1.0** 格式
+5. 将导出的 JSON 文件放入 `data/self/annotations/`
 
-```bash
-outputs/
-│
-├── plots/
-│   ├── loss_total_iter.png        # 总损失曲线
-│   └── loss_components_iter.png   # 五个损失项曲线
-│
-└── checkpoints/
-    └──  model_epoch_1-5.pth         # 模型权重
-```
+> ⚠️ **标注要点**：每个植株单独标注；精确勾勒边缘；处理遮挡区域；检查是否有遗漏。
 
+### 3️⃣ 标注格式转换
 
+在 Notebook 中运行格式转换代码，将 CVAT 导出的 Datumaro 格式转换为 COCO 格式（`annotations.json`）。转换过程包括：
 
+- 读取 CVAT 的 RLE 格式 mask
+- 计算每个实例的 bbox 和 area
+- 输出标准 COCO 格式标注文件
 
-## 🔍 推理（Inference）
+### 4️⃣ 模型训练
 
-```bash
-python infer.py
-```
+使用预训练的 **Mask R-CNN (ResNet50-FPN)** 进行微调训练：
 
-推理结果将保存到 `outputs/infer_results/`。
+- 自动检测设备（CUDA/CPU）
+- 默认训练 5 个 epoch
+- 记录训练损失（总损失 + 5 个子损失项）
+- 每个 epoch 保存模型权重到 `outputs/checkpoints/`
 
-结果示例：
+**训练时间估计**：
+- CPU：约 2-3 分钟/epoch（20 张图像）
+- GPU：约 30-60 秒/epoch
 
+### 5️⃣ 模型推理与评估
 
-![](data/test_images/IMG_20260130_180226.jpg)
+加载训练好的模型，对公共测试集进行推理，评估指标包括：
 
-![](example/pred_IMG_20260130_180226.jpg)
+- **BBOX IoU**：边框检测精度
+- **Mask IoU**：分割精度
+- IoU > 0.5 的准确率
+
+同时生成原图、Ground Truth Masks、Predicted Masks 的三栏对比可视化。
+
+### 6️⃣ 可重复性
+
+- 固定随机种子 (`random.seed(42)`, `np.random.seed(42)`, `torch.manual_seed(42)`)
+- 使用 `uv pip freeze > requirements.txt` 锁定依赖版本
+
+---
+
+## 📊 推理结果示例
+
+![推理结果示例](example/pred_IMG_20260130_180226.jpg)
+
+---
+
+## 📝 学习目标
+
+完成本实验后，你将掌握：
+
+- ✅ 实例分割的基本原理（语义分割 vs 实例分割）
+- ✅ CVAT 图像标注工具的使用
+- ✅ Mask R-CNN 模型的训练与推理
+- ✅ COCO 格式数据的处理与转换
+- ✅ 模型性能评估方法（IoU 指标）
+- ✅ 可重复性研究的最佳实践
