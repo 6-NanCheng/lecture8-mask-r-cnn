@@ -17,7 +17,23 @@ execute:
   error: true
 ---
 
-# 环境配置与理论基础
+# 实例分割简介
+
+本项目使用实例分割模型对番茄植株照片进行分析。主要分为数据标注、模型训练、模型推理和性能评估 4 个部分。
+
+**语义分割 vs 实例分割**：
+
+- **语义分割**：像素级分类，所有番茄植株标为同一类
+- **实例分割**：像素级分类 + 实例区分，番茄 A、B、C 分别标注
+
+**Mask R-CNN** 是实例分割的经典模型，基于 Faster R-CNN 扩展，包含三个分支：
+
+1. **分类分支**：预测物体类别
+2. **边框分支**：回归 bbox
+3. **Mask 分支**：输出实例分割 mask
+
+
+# 环境配置
 
 ## 环境配置
 
@@ -54,18 +70,6 @@ print(f"CUDA available: {torch.cuda.is_available()}")
 print("Environment setup successful!")
 ```
 
-## 实例分割简介
-
-**语义分割 vs 实例分割**：
-
-- **语义分割**：像素级分类，所有番茄植株标为同一类
-- **实例分割**：像素级分类 + 实例区分，番茄 A、B、C 分别标注
-
-**Mask R-CNN** 是实例分割的经典模型，基于 Faster R-CNN 扩展，包含三个分支：
-
-1. **分类分支**：预测物体类别
-2. **边框分支**：回归 bbox
-3. **Mask 分支**：输出实例分割 mask
 
 ---
 
@@ -75,36 +79,51 @@ print("Environment setup successful!")
 
 查看当前项目结构：
 
-预期结构：
-
 ```
 lecture8-maskrcnn/
-├── data/
-│   ├── images/              # 训练图像
-│   ├── annotations/         # 标注文件
-│   └── test_images/         # 测试图像
-├── train.py
-├── infer.py
-├── evaluate.py
+├── data/   # 数据目录，每个子目录均含有两个文件夹，images 保存图片（jpg 文件），annotations 保存标注（json 文件）
+│   ├── example/      # 示例用标注图像和标注数据
+│   ├── self/         # 需要自己完成标注的图像和标注保存位置
+│   └── test/         # 用于测试的图像和标注
+├── .gitignore
+├── lecture8_maskrcnn_workflow.qmd
+├── README.md
 └── requirements.txt
 ```
 
 ## 检查数据文件
 
-验证训练图像和测试图像是否就位：
+验证训练图像是否就位：
 
 ```{python}
 import os
 from pathlib import Path
 
-train_dir = Path("data/images")
-test_dir = Path("data/test_images")
+TRAIN_DIR = Path("data/example/images")
+# TRAIN_DIR = Path("data/self/images")
 
-if train_dir.exists():
-    train_images = [f for f in train_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
+if TRAIN_DIR.exists():
+    train_images = [f for f in TRAIN_DIR.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
     print(f"训练图像数量: {len(train_images)}")
 else:
-    print("训练图像目录不存在")
+    print("训练图像不存在")
+
+```
+
+如果训练图像不存在，请到 [此处](data/self/README.md) 按照自己的学号下载自己的文件，解压缩后放到 `data/self/images` 文件夹中。
+
+
+::: {.callout-note}
+## 数据要求
+- 训练图像：10-30 张番茄植株图像（JPG/PNG 格式）
+- 测试图像：公共测试集，所有学生使用相同数据（随本项目提供）
+- 图像分辨率：建议 1000×1000 以上
+:::
+
+检查测试数据是否存在：
+
+```{python}
+test_dir = Path("data/test/images")
 
 if test_dir.exists():
     test_images = [f for f in test_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
@@ -116,12 +135,7 @@ else:
     print("\n测试图像目录不存在")
 ```
 
-::: {.callout-note}
-## 数据要求
-- 训练图像：10-30 张番茄植株图像（JPG/PNG 格式）
-- 测试图像：公共测试集，所有学生使用相同数据
-- 图像分辨率：建议 1000×1000 以上
-:::
+测试图像随本仓库统一提供，如果没有请到 <https://github.com/D2RS-2026spring/lecture8-mask-r-cnn> 克隆仓库到本地继续。
 
 ---
 
@@ -148,40 +162,29 @@ else:
 
 ## 导出并放置标注文件
 
-从 CVAT 导出后，解压并放置标注文件：
+从 CVAT 导出后，将下载得到的压缩包解压并移动到 `data/self/annotations` 文件夹中。
 
-```bash
-# 假设下载的文件为 task_tomato-export.zip
-# 解压到临时目录
-unzip task_tomato-export.zip -d cvat_export
-
-# 复制标注文件到项目目录
-cp cvat_export/annotations/default.json data/annotations/merged_raw.json
-
-# 清理临时文件
-rm -rf cvat_export
-```
+![](screenshot/1.jpg)
 
 验证标注文件：
 
 ```{python}
 from pathlib import Path
 
-ann_file = Path("data/annotations/merged_raw.json")
-if ann_file.exists():
+ann_dir = Path("data/example/annotations")
+# ann_dir = Path("data/self/annotations")
+json_files = list(ann_dir.glob("*.json"))
+
+if json_files:
+    ann_file = json_files[0]
     file_size = ann_file.stat().st_size
     print(f"文件: {ann_file}")
     print(f"大小: {file_size:,} bytes ({file_size/1024:.2f} KB)")
-    
-    print("\n文件前10行:")
-    with open(ann_file, 'r') as f:
-        for i, line in enumerate(f):
-            if i >= 10:
-                break
-            print(line.rstrip())
 else:
-    print(f"文件不存在: {ann_file}")
+    print(f"目录 {ann_dir} 中未找到任何 JSON 格式的标注文件")
 ```
+
+如果没有找到任何 JSON 格式的标注文件，那么请参照上述提示进行图片标注并将标注结果保存到 `data/self/annotations` 文件夹中。
 
 ---
 
@@ -189,7 +192,7 @@ else:
 
 ## 转换原理
 
-CVAT 导出的 Datumaro 格式需要转换为 COCO 格式。转换脚本 `convert_cvat_to_coco.py` 完成以下工作：
+CVAT 导出的 Datumaro 格式需要转换为 COCO 格式。转换工作：
 
 1. 读取 CVAT 的 RLE 格式 mask
 2. 计算每个实例的 bbox 和 area
@@ -207,8 +210,9 @@ import json
 import numpy as np
 from pycocotools import mask as mask_utils
 
-INPUT_JSON = "data/annotations/merged_raw.json"
-OUTPUT_JSON = "data/annotations/annotations.json"
+INPUT_JSON = ann_file
+OUTPUT_JSON = "data/example/annotations/annotations.json"
+#OUTPUT_JSON = "data/self/annotations/annotations.json"
 
 with open(INPUT_JSON, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -285,7 +289,7 @@ print(f"转换完成！共处理 {len(coco['images'])} 张图像，{len(coco['an
 import json
 
 # 读取转换后的标注文件
-with open('data/annotations/annotations.json', 'r') as f:
+with open(OUTPUT_JSON, 'r') as f:
     coco_data = json.load(f)
 
 print(f"图像数量: {len(coco_data['images'])}")
@@ -298,21 +302,13 @@ for cat in coco_data['categories']:
 
 print("\n第一张图像信息:")
 print(json.dumps(coco_data['images'][0], indent=2))
-
-print("\n第一个标注信息:")
-ann = coco_data['annotations'][0].copy()
-if 'segmentation' in ann:
-    ann['segmentation'] = {'counts': '...', 'size': ann['segmentation']['size']}
-print(json.dumps(ann, indent=2))
 ```
 
 ---
 
 # 模型训练
 
-## 训练脚本说明
-
-`train.py` 的核心功能：
+训练脚本的核心功能包括：
 
 - 自动检测设备（CUDA/CPU）
 - 加载 COCO 格式数据
@@ -407,7 +403,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 transforms = T.Compose([T.ToTensor()])
-dataset = COCOTomatoDataset("data/images", "data/annotations/annotations.json", transforms=transforms)
+dataset = COCOTomatoDataset(TRAIN_DIR, OUTPUT_JSON, transforms=transforms)
 train_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
 
 model = get_model(num_classes=2)
@@ -530,9 +526,7 @@ else:
 
 # 模型推理
 
-## 推理脚本说明
-
-`infer.py` 加载训练好的模型，对测试集进行推理，并可视化预测结果（mask + bbox + 置信度 + 面积）。
+推理时加载训练好的模型，对测试集进行推理，并可视化预测结果（mask + bbox + 置信度 + 面积）。
 
 ## 运行推理
 
