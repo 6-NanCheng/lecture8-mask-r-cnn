@@ -10,15 +10,12 @@
 ```
 maskrcnn/
 │
-├── train.py                 # 训练脚本（CPU）
-├── dataset.py               # COCO 数据集加载（含 RLE mask 解码）
-├── model.py                 # Mask R-CNN 模型构建
-├── infer.py                 # 推理脚本
+├── lecture8_maskrcnn_workflow.qmd         # 数据整理与模型训练脚本（CPU）
 │
 ├── data/
 │   ├── images/              # 训练图片（不上传）
 │   ├── annotations/         # 标注文件（不上传）
-│   └── test_images/         # 推理图片（不上传）
+│   └── test/                # 测试与评估标准图片
 │
 ├── outputs/
 │   ├── checkpoints/         # 模型权重（不上传）
@@ -50,17 +47,9 @@ uv pip install -r requirements.txt
 
 ## 🧾 数据转换
 
-把标注好的 **Train.json** 放入 data/annotations 下面；把训练集图片放入 data/images 下面；把公共测试集放入 data/test_images 下面。
+把标注好的 **Train.json** 放入 data/annotations 下面；把训练集图片放入 data/images 下面。
 
-```bash
-# 定位到工作目录
-cd 工作目录
 
-# 转换为可训练的标注格式
-# 运行前请在脚本convert_cvat_to_coco.py里面将INPUT_JSON  = "data/annotations/merged_raw.json"中的 merged_raw.json 修改为自己的名称后保存
-python convert_cvat_to_coco.py
-
-```
 
 ### 运行结束后会生成训练所需json（annotations.json）：
 
@@ -70,10 +59,6 @@ data/annotations/
 
 ```
 ## 🚀 训练模型（CPU）
-
-```bash
-python train.py
-```
 
 ### 训练结束后会生成训练结果：
 
@@ -93,11 +78,6 @@ outputs/
 
 ## 🔍 推理（Inference）
 
-```bash
-python infer.py
-```
-
-推理结果将保存到 `outputs/infer_results/`。
 
 结果示例：
 
