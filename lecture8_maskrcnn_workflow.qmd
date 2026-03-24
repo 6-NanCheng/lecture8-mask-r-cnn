@@ -82,7 +82,7 @@ lecture8-maskrcnn/
 ├── data/
 │   ├── images/              # 训练图像
 │   ├── annotations/         # 标注文件
-│   └── test_images/         # 测试图像
+│   └── test/                # 测试图像与标注文件
 ├── train.py
 ├── infer.py
 ├── evaluate.py
@@ -98,7 +98,7 @@ import os
 from pathlib import Path
 
 train_dir = Path("data/images")
-test_dir = Path("data/test_images")
+test_dir = Path("data/test/test_images")
 
 if train_dir.exists():
     train_images = [f for f in train_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']]
@@ -528,7 +528,7 @@ else:
 
 ---
 
-# 模型推理
+# 模型推理与评估
 
 ## 推理脚本说明
 
