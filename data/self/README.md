@@ -1,3 +1,11 @@
+# 数据下载链接
+
+请大家按照学号下载自己对应的图片文件，解压缩后放到 `data/self` 文件夹中，然后进行图片标注，将标注数据 `*.json` 也保存在 `data/self` 文件夹中。
+
+---
+
+**下载链接附后：**
+
 | 学号 | 下载链接 |
 | --- | --- |
 | 2025301110128 | [下载链接](https://tomato1-images.oss-cn-wuhan-lr.aliyuncs.com/tomato_images%2F2025301110128.zip?OSSAccessKeyId=LTAI5tKEjVHR9g6NBj5Z4uyi&Expires=1774939441&Signature=xG7%2FAOACOU0qaGz09E0TBhE5mNg%3D) |
